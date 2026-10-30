@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from math import factorial
 
@@ -76,12 +76,14 @@ class Params:
     rotation: bool = True              # ברוטציה הפרמיה מתחלקת בין שתי הגדולות
     election_cost: float = 0.3         # עלות כללית של בחירות חוזרות (מוריד את ערך החוץ)
     base_outside: float = 0.55         # ערך בסיס של בחירות חוזרות
-    momentum: dict = field(default_factory=dict)   # שינוי צפוי בכוח בבחירות חוזרות לכל מפלגה
+    risk: dict = field(default_factory=dict)       # לכל מפלגה: (Δ מנדטים צפוי, σ אי-ודאות, נקודת ייחוס)
+    loss_aversion: float = 2.25        # λ: פי כמה הפסד כואב יותר מרווח באותו גודל
+    threshold: float = 4.0             # אחוז החסימה במנדטים: מתחתיו המפלגה לא נכנסת
+    risk_k: float = 0.5                # רגישות ערך הבחירות לתוצאת ההגרלה
     hardness: dict = field(default_factory=dict)   # קשיחות כל קבוצת קווים אדומים (0-3)
     arab_external: bool = True         # מפלגות ערביות כתומכות מבחוץ (בלי תיקים)
     external_discount: float = 0.5     # כמה תמיכה מבחוץ מקטינה קווים אדומים כלפיהן
     arab_budget: float = 0.35          # הישגים תקציביים לתומכת חיצונית
-    transfer_eff: float = 0.0          # יעילות העברות (תיקים/תקציבים) בין שותפות: 0 = אין, 1 = מלאה
     caretaker: float = 0.15            # פרמיית ממשלת מעבר: ערך הפלונטר לליכוד, שנשאר בשלטון
 
 
@@ -232,11 +234,58 @@ def utility(i, c, p: Params, M=None) -> float:
     return u
 
 
+# הגרלת הבחירות החוזרות לכל מפלגה: (Δ מנדטים צפוי, σ אי-ודאות במנדטים, נקודת ייחוס במנדטים).
+# נקודת הייחוס היא המעמד שהמפלגה רואה כ"שלה". מתחתיה היא בתחום ההפסדים.
+ELECTION_RISK = {
+    "הליכוד": (3.0, 3.0, 32),           # איבד את המנדטים של וינטר, ומשווה את עצמו ל-32 של 2022
+    "ש\"ס": (2.0, 2.0, 11),             # ירד מ-11 ל-6 ורוצה לחזור למעמדו
+    "יהדות התורה": (1.0, 1.5, 7),
+    "הציונות הדתית": (0.0, 2.0, 6),
+    "עוצמה יהודית": (0.0, 2.0, 7),
+    "ישר": (0.0, 3.0, 21),              # השמאל והמרכז התארגנו היטב: אין לאן לעלות
+    "ביחד": (0.0, 2.0, 12),
+    "הדמוקרטים": (0.0, 1.5, 8),
+    "ישראל ביתנו": (0.0, 1.5, 7),
+    "הרשימה המשותפת": (-2.0, 3.0, 12),  # שיא היסטורי, וחשש מאובדן כוח ומשוחד בחירות
+    "רע\"מ": (-1.0, 2.5, 7),
+}
+
 INCUMBENT = "הליכוד"   # מפלגת ראש הממשלה, שממשיכה לכהן בממשלת מעבר עד שתקום ממשלה
 
 
+def prospect_value(x, lam: float, a: float = 0.88):
+    """פונקציית הערך של תורת הערכת הסיכויים (כהנמן-טברסקי): קעורה ברווחים, קמורה ומוכפלת ב-λ בהפסדים."""
+    x = np.asarray(x, float)
+    return np.where(x >= 0, np.abs(x) ** a, -lam * np.abs(x) ** a)
+
+
+_GRID = np.linspace(-4, 4, 161)
+_W = np.exp(-_GRID ** 2 / 2)
+_W /= _W.sum()
+
+
+def election_gamble(i, p: Params) -> float:
+    """כמה המפלגה מרוויחה (חיובי) או מפסידה (שלילי) מהליכה לבחירות, לעומת שמירה על המנדטים הנוכחיים.
+    התוצאה נמדדת יחסית לנקודת הייחוס, ומפלגה שיורדת מתחת לאחוז החסימה מקבלת 0 מנדטים."""
+    delta, sigma, ref = p.risk.get(i, ELECTION_RISK[i])
+    now = PARTIES[i]["seats"]
+    ref = max(ref, 1)
+    after = np.maximum(now + delta + sigma * _GRID, 0)
+    after = np.where(after < p.threshold, 0, after)
+    gamble = float((_W * prospect_value((after - ref) / ref, p.loss_aversion)).sum())
+    keep = float(prospect_value((now - ref) / ref, p.loss_aversion))
+    return gamble - keep
+
+
+def threshold_risk(i, p: Params) -> float:
+    """ההסתברות שהמפלגה תרד מתחת לאחוז החסימה בבחירות חוזרות."""
+    delta, sigma, _ = p.risk.get(i, ELECTION_RISK[i])
+    after = np.maximum(PARTIES[i]["seats"] + delta + sigma * _GRID, 0)
+    return float(_W[after < p.threshold].sum())
+
+
 def outside_option(i, p: Params) -> float:
-    e = p.base_outside + p.momentum.get(i, 0.0) - p.election_cost
+    e = p.base_outside - p.election_cost + p.risk_k * election_gamble(i, p)
     if i == INCUMBENT:
         e += p.caretaker
     return e
@@ -246,31 +295,11 @@ def outside_option(i, p: Params) -> float:
 class CoalitionResult:
     members: tuple
     seats: int
-    utilities: dict          # תועלת לפני העברות
-    surplus: dict            # תועלת מעל ערך החוץ, לפני העברות
+    utilities: dict
+    surplus: dict
     feasible: bool
-    blockers: list           # מפלגות שמעדיפות בחירות לפני העברות
+    blockers: list
     nash: float
-    transfers: dict          # העברה לכל מפלגה: חיובי = מקבלת, שלילי = משלמת
-    final_surplus: dict      # עודף אחרי העברות
-    gap: float               # הפער שנותר אחרי שמנצלים את כל ההעברות האפשריות (0 = ישימה)
-
-
-def settle_transfers(sur: dict, eff: float):
-    """המרוויחות משלמות למפסידות, באופן יחסי לרווח שלהן.
-    כל יחידה שמשולמת מגיעה למקבלת בשיעור eff (השאר הולך לאיבוד בדרך).
-    מחזיר (העברות, עודף סופי, פער שנותר)."""
-    deficit = sum(-v for v in sur.values() if v < 0)
-    gain = sum(v for v in sur.values() if v > 0)
-    if deficit == 0:
-        return dict.fromkeys(sur, 0.0), dict(sur), 0.0
-    capacity = eff * gain
-    if capacity + 1e-12 < deficit:
-        return dict.fromkeys(sur, 0.0), dict(sur), deficit - capacity
-    paid = deficit / eff
-    transfers = {i: (-v if v < 0 else -paid * v / gain) for i, v in sur.items()}
-    final = {i: sur[i] + transfers[i] for i in sur}
-    return transfers, final, 0.0
 
 
 def evaluate(p: Params, min_only=True):
@@ -280,11 +309,9 @@ def evaluate(p: Params, min_only=True):
         us = {i: utility(i, c, p, M) for i in c}
         sur = {i: us[i] - outside_option(i, p) for i in c}
         blockers = [i for i in c if sur[i] < 0]
-        transfers, final, gap = settle_transfers(sur, p.transfer_eff)
-        feas = gap == 0
-        # מפלגה שפוצתה בדיוק עד לערך החוץ מקבלת רצפה קטנה, כדי שהקואליציה תדורג נמוך (שבירה) ולא תיפסל
-        nash = float(np.mean(np.log(np.maximum(list(final.values()), 1e-2)))) if feas else -np.inf
-        res.append(CoalitionResult(c, seats(c), us, sur, feas, blockers, nash, transfers, final, gap))
+        feas = not blockers
+        nash = float(np.sum(np.log(np.maximum([sur[i] for i in c], 1e-9)))) / len(c) if feas else -np.inf
+        res.append(CoalitionResult(c, seats(c), us, sur, feas, blockers, nash))
     return res
 
 
@@ -294,7 +321,7 @@ def formateur_outcome(p: Params, order, results=None):
     for f in order:
         cands = [r for r in results if r.feasible and f in r.members and f not in ARAB]
         if cands:
-            best = max(cands, key=lambda r: (r.final_surplus[f], r.nash))
+            best = max(cands, key=lambda r: (r.utilities[f], r.nash))
             return f, best
     return None, None
 
@@ -307,3 +334,131 @@ def label(c, p: Params | None = None):
             s += "  ‖ בתמיכת: " + ", ".join(ext)
         return s
     return " + ".join(c)
+
+
+@dataclass
+class ChickenGame:
+    a: str
+    b: str
+    coalition: tuple         # הקואליציה שעליה נאבקים (כוללת את שתיהן)
+    stake: float             # הפרס שעליו נאבקים (ראשות הממשלה / תיקים בכירים)
+    payoffs: dict            # (אסטרטגיה של a, אסטרטגיה של b) -> (תשלום a, תשלום b)
+    fear: dict               # לכל שחקנית: כמה היא מפסידה בהתנגשות לעומת כניעה (L - E)
+    pure_eq: list            # שיווי משקל טהורים
+    mixed: dict | None       # הסתברות להתעקש לכל שחקנית בשיווי המשקל המעורב
+    p_elections: float       # הסתברות לבחירות חוזרות (התנגשות)
+    kind: str                # סוג המשחק
+    risk_dominant: tuple | None   # שיווי המשקל הדומיננטי-בסיכון (הרסאניי-זלטן)
+
+
+SWERVE, STRAIGHT = "מוותרת", "מתעקשת"
+
+
+def chicken_coalitions(a, b):
+    """כל הקואליציות המנצחות המינימליות שכוללות את שתי השחקניות."""
+    return [c for c in all_winning_coalitions(min_only=True) if a in c and b in c]
+
+
+def chicken_game(a, b, p: Params, coalition=None, stake=None) -> ChickenGame:
+    """משחק הצ'יקן בין a ל-b על קואליציה משותפת.
+    שתיהן יכולות לוותר (להסכים לחלוקה) או להתעקש (לדרוש את הפרס כולו).
+      שתיהן מוותרות -> חלוקה שווה של הפרס (רוטציה).
+      אחת מתעקשת     -> המתעקשת לוקחת את כל הפרס.
+      שתיהן מתעקשות  -> פלונטר ובחירות חוזרות: כל אחת מקבלת את ערך החוץ שלה.
+    התועלת הבסיסית מהקואליציה מחושבת בלי פרמיית ראשות הממשלה, כי הפרמיה היא הפרס."""
+    stake = p.pm_premium if stake is None else stake
+    q = replace(p, pm_premium=0.0)
+    M = penalty_matrix(q)
+    E = {i: outside_option(i, p) for i in (a, b)}
+    if coalition is None:
+        cands = chicken_coalitions(a, b)
+        coalition = max(cands, key=lambda c: min(utility(i, c, q, M) - E[i] for i in (a, b)))
+    U = {i: utility(i, coalition, q, M) for i in (a, b)}
+    W = {i: U[i] + stake for i in (a, b)}
+    C = {i: U[i] + stake / 2 for i in (a, b)}
+    L = U
+    pay = {(SWERVE, SWERVE): (C[a], C[b]), (SWERVE, STRAIGHT): (L[a], W[b]),
+           (STRAIGHT, SWERVE): (W[a], L[b]), (STRAIGHT, STRAIGHT): (E[a], E[b])}
+    fear = {i: L[i] - E[i] for i in (a, b)}
+
+    strats = (SWERVE, STRAIGHT)
+    other = {SWERVE: STRAIGHT, STRAIGHT: SWERVE}
+    pure = [(x, y) for x in strats for y in strats
+            if pay[(x, y)][0] >= pay[(other[x], y)][0] - 1e-12
+            and pay[(x, y)][1] >= pay[(x, other[y])][1] - 1e-12]
+
+    mixed, risk_dom = None, None
+    half = stake / 2
+    if fear[a] > 0 and fear[b] > 0 and half > 0:
+        kind = "צ'יקן"
+        # כל שחקנית מתעקשת בהסתברות שמשאירה את היריבה אדישה
+        mixed = {a: half / (half + fear[b]), b: half / (half + fear[a])}
+        p_el = mixed[a] * mixed[b]
+        # הרסאניי-זלטן: שיווי המשקל שבו מכפלת הפסדי הסטייה גדולה יותר
+        a_wins = half * fear[b]
+        b_wins = half * fear[a]
+        risk_dom = (STRAIGHT, SWERVE) if a_wins > b_wins else (SWERVE, STRAIGHT)
+    elif fear[a] > 0 and fear[b] > 0:
+        kind = "אין על מה להילחם"
+        p_el = 0.0
+    elif fear[a] <= 0 and fear[b] <= 0:
+        kind = "התנגשות ודאית"
+        p_el = 1.0
+    else:
+        bold = a if fear[a] <= 0 else b
+        kind = f"{bold} לא חוששת מבחירות"
+        p_el = 0.0
+    return ChickenGame(a, b, coalition, stake, pay, fear, pure, mixed, p_el, kind, risk_dom)
+
+
+@dataclass
+class CorrelatedEq:
+    probs: dict              # (אסטרטגיה של a, אסטרטגיה של b) -> הסתברות שהמתווך ימליץ על התא
+    payoffs: tuple           # התשלום הצפוי לכל שחקנית כשהיא מצייתת להמלצה
+    p_elections: float       # הסתברות להתנגשות בשיווי המשקל שנבחר
+    p_el_range: tuple        # טווח ההסתברות לבחירות על פני כל שיוויי המשקל המתואמים
+    mixed_payoffs: tuple | None   # התשלום הצפוי בשיווי המשקל המעורב, להשוואה
+
+
+def correlated_equilibrium(g: ChickenGame) -> CorrelatedEq:
+    """שיווי משקל מתואם (אומן, 1974) במשחק הצ'יקן.
+    מתווך מגריל תא (x, y) לפי התפלגות p ולוחש לכל שחקנית רק את ההמלצה שלה.
+    p הוא שיווי משקל מתואם אם לאף שחקנית לא כדאי לסטות מההמלצה, בהינתן מה שהיא למדה ממנה:
+      Σ_y p(x,y)·[u_a(x,y) − u_a(x',y)] ≥ 0   לכל המלצה x וסטייה x' (וכך גם ל-b).
+    הקבוצה היא פוליטופ, ולכן האופטימום של כל מטרה ליניארית מתקבל בקודקוד. בוחרים את שיווי המשקל
+    שממקסם את סכום התשלומים, ובשוויון את זה שממליץ הכי הרבה על רוטציה (ויתור הדדי)."""
+    strats = (SWERVE, STRAIGHT)
+    cells = [(x, y) for x in strats for y in strats]
+    other = {SWERVE: STRAIGHT, STRAIGHT: SWERVE}
+    rows = []
+    for x in strats:   # תנאי ציות של a: הומלץ לה x, שוקלת לסטות ל-x'
+        rows.append([(g.payoffs[c][0] - g.payoffs[(other[x], c[1])][0]) if c[0] == x else 0.0 for c in cells])
+    for y in strats:   # תנאי ציות של b
+        rows.append([(g.payoffs[c][1] - g.payoffs[(c[0], other[y])][1]) if c[1] == y else 0.0 for c in cells])
+    rows += np.eye(4).tolist()          # אי-שליליות
+    A = np.array(rows)
+
+    verts = []
+    for tight in combinations(range(len(A)), 3):
+        S = np.vstack([A[list(tight)], np.ones(4)])
+        if abs(np.linalg.det(S)) < 1e-12:
+            continue
+        v = np.linalg.solve(S, np.array([0, 0, 0, 1.0]))
+        if (A @ v >= -1e-9).all():
+            verts.append(np.clip(v, 0, None))
+
+    pay = np.array([g.payoffs[c] for c in cells])
+    welfare = [v @ pay.sum(axis=1) for v in verts]
+    top = max(welfare)
+    best = max((v for v, w in zip(verts, welfare) if w >= top - 1e-9), key=lambda v: v[0])
+    tt = cells.index((STRAIGHT, STRAIGHT))
+    p_el = [v[tt] for v in verts]
+
+    mixed_pay = None
+    if g.mixed:
+        qa, qb = g.mixed[g.a], g.mixed[g.b]
+        # בשיווי המשקל המעורב כל שחקנית אדישה, ולכן התשלום שלה שווה לתשלום מוויתור
+        mixed_pay = ((1 - qb) * g.payoffs[(SWERVE, SWERVE)][0] + qb * g.payoffs[(SWERVE, STRAIGHT)][0],
+                     (1 - qa) * g.payoffs[(SWERVE, SWERVE)][1] + qa * g.payoffs[(STRAIGHT, SWERVE)][1])
+    return CorrelatedEq(dict(zip(cells, best)), tuple(best @ pay), float(best[tt]),
+                        (float(min(p_el)), float(max(p_el))), mixed_pay)
