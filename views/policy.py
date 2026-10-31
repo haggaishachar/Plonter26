@@ -3,7 +3,7 @@ import plotly.express as px
 import streamlit as st
 
 from model import NAMES, PARTIES
-from ui import BLOC_COLORS
+from ui import BLOC_COLORS, chart
 
 st.title("🧭 מרחב המדיניות")
 st.caption("המיקומים של המפלגות על ארבעת הצירים (0-10) הם הנחות המודל, ולא תלויים בפרמטרים החופשיים.")
@@ -18,4 +18,4 @@ fig = px.scatter(pos, x=x_ax, y=y_ax, size="מנדטים", color="גוש", text=
                  color_discrete_map=BLOC_COLORS, height=600,
                  range_x=[-0.5, 10.5], range_y=[-0.5, 10.5])
 fig.update_traces(textposition="top center")
-st.plotly_chart(fig, width="stretch")
+chart(fig)

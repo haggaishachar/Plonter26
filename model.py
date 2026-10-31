@@ -6,7 +6,7 @@
       α·ג'ובים(i,C) + (1-α)·מדיניות(i,C) + פרמיית_רה"מ − Σ קווים_אדומים(i,j∈C)
    ג'ובים לפי כלל גמסון (חלק יחסי מהמנדטים בקואליציה).
    מדיניות = 1 − מרחק משוקלל ממרכז הכובד של הקואליציה.
-3. נקודת אי-הסכמה = בחירות חוזרות (ערך חוץ E_i). מפלגה מצטרפת רק אם U ≥ E_i.
+3. נקודת אי-הסכמה = בחירות חדשות (ערך חוץ E_i = בסיס − חשש_i). מפלגה מצטרפת רק אם U ≥ E_i.
 4. מנגנון הרכבה: מרכיב/ת (פורמטור) לפי סדר מנדטים, בוחר את הקואליציה
    הישימה הטובה לו. אם אף מרכיב לא מצליח -> פלונטר -> בחירות.
 """
@@ -80,22 +80,17 @@ class Params:
     w_jud: float = 1.0                 # חשיבות ציר הרפורמה המשפטית
     pm_premium: float = 0.4            # בונוס לראשות הממשלה (למפלגה הגדולה בקואליציה)
     rotation: bool = True              # ברוטציה הפרמיה מתחלקת בין שתי הגדולות
-    election_cost: float = 0.3         # עלות כללית של בחירות חוזרות (מוריד את ערך החוץ)
-    base_outside: float = 0.55         # ערך בסיס של בחירות חוזרות
-    risk: dict = field(default_factory=dict)       # לכל מפלגה: (Δ מנדטים צפוי, σ אי-ודאות, נקודת ייחוס)
-    loss_aversion: float = 2.25        # λ: פי כמה הפסד כואב יותר מרווח באותו גודל
-    threshold: float = 4.0             # אחוז החסימה במנדטים: מתחתיו המפלגה לא נכנסת
-    risk_k: float = 0.5                # רגישות ערך הבחירות לתוצאת ההגרלה
+    election_fear: dict = field(default_factory=dict)  # לכל מפלגה: כמה היא חוששת מבחירות חדשות
     hardness: dict = field(default_factory=dict)   # קשיחות כל קבוצת קווים אדומים (0-3)
     arab_external: bool = True         # מפלגות ערביות כתומכות מבחוץ (בלי תיקים)
     raam_inside: bool = True           # רע"מ חברה בקואליציה (כמו ב-2021), רק המשותפת תומכת מבחוץ
     external_discount: float = 0.5     # כמה תמיכה מבחוץ מקטינה קווים אדומים כלפיהן
     arab_budget: float = 0.35          # הישגים תקציביים לתומכת חיצונית
-    caretaker: float = 0.15            # פרמיית ממשלת מעבר: ערך הפלונטר לליכוד, שנשאר בשלטון
+    min_only: bool = True              # רק קואליציות מינימליות (בלי מפלגה מיותרת)
 
 
 def default_hardness():
-    return {"boycott_bibi": 1.0, "far_right_vs_arabs": 3.0, "far_right_vs_left": 1.5,
+    return {"boycott_bibi": 1.5, "far_right_vs_arabs": 3.0, "far_right_vs_left": 1.5,
             "draft_law": 0.5, "zionist_vs_arabs": 1.05, "arabs_vs_right": 2.0,
             "far_right_no_likud": 1.5, "otzma_vs_center": 0.3}
 
@@ -213,25 +208,29 @@ def rotation_pair(c, p: Params):
 
 def utility(i, c, p: Params, M=None) -> float:
     """תועלת של מפלגה i מקואליציה c (גם אם i מחוץ לה)."""
+    return sum(utility_parts(i, c, p).values())
+
+
+def utility_parts(i, c, p: Params) -> dict:
+    """פירוק התועלת של i מ-c לרכיביה: תיקים, מדיניות, ראשות ממשלה ועונשי קווים אדומים (שליליים)."""
     gov, ext = _members_split(c, p)
     pol = policy_utility(i, c, p)
     if i not in c:
-        return (1 - p.alpha) * pol * 0.6   # באופוזיציה: רק השפעה חלקית על מדיניות
-    if i in ext:
-        office = p.arab_budget
-    else:
-        office = PARTIES[i]["seats"] / seats(gov)
-    u = p.alpha * office + (1 - p.alpha) * pol
+        return {"מדיניות (מהאופוזיציה)": (1 - p.alpha) * pol * 0.6}   # רק השפעה חלקית על מדיניות
+    office = p.arab_budget if i in ext else PARTIES[i]["seats"] / seats(gov)
+    parts = {"תיקים": p.alpha * office, "מדיניות": (1 - p.alpha) * pol}
     # פרמיית ראשות ממשלה
     ranked = pm_parties(gov)
     rot = rotation_pair(c, p)
     if rot:
         if i in rot:
-            u += p.pm_premium / 2
+            parts["ראשות הממשלה (רוטציה)"] = p.pm_premium / 2
     elif i == ranked[0]:
-        u += p.pm_premium
+        parts["ראשות הממשלה"] = p.pm_premium
     # קווים אדומים
-    return u - sum(group_penalties(i, c, p, ext).values())
+    for k, pen in group_penalties(i, c, p, ext).items():
+        parts[f"קו אדום: {REDLINE_GROUPS[k][0]}"] = -pen
+    return parts
 
 
 def group_penalties(i, c, p: Params, ext=None) -> dict:
@@ -272,6 +271,15 @@ ELECTION_RISK = {
 INCUMBENT = "הליכוד"   # מפלגת ראש הממשלה, שממשיכה לכהן בממשלת מעבר עד שתקום ממשלה
 
 
+# הפרמטרים של ההגרלה, שממנה נגזרים ערכי ברירת המחדל של החשש מבחירות
+LOSS_AVERSION = 2.25   # λ: פי כמה הפסד כואב יותר מרווח באותו גודל (כהנמן-טברסקי)
+THRESHOLD = 4.0        # אחוז החסימה במנדטים: מתחתיו המפלגה לא נכנסת
+ELECTION_COST = 0.3    # עלות כללית של בחירות: חובות, עייפות פעילים, אשמה בפיזור הכנסת
+RISK_K = 0.5           # רגישות החשש לתוצאת ההגרלה
+CARETAKER = 0.15       # פרמיית ממשלת מעבר לליכוד, שנשאר בשלטון כל עוד אין ממשלה
+BASE_OUTSIDE = 0.55    # ערך בסיס של בחירות חדשות. ערך החוץ של מפלגה = בסיס − חשש
+
+
 def prospect_value(x, lam: float, a: float = 0.88):
     """פונקציית הערך של תורת הערכת הסיכויים (כהנמן-טברסקי): קעורה ברווחים, קמורה ומוכפלת ב-λ בהפסדים."""
     x = np.asarray(x, float)
@@ -283,31 +291,44 @@ _W = np.exp(-_GRID ** 2 / 2)
 _W /= _W.sum()
 
 
-def election_gamble(i, p: Params) -> float:
+def _seats_after(i):
+    delta, sigma, _ = ELECTION_RISK[i]
+    return np.maximum(PARTIES[i]["seats"] + delta + sigma * _GRID, 0)
+
+
+def election_gamble(i) -> float:
     """כמה המפלגה מרוויחה (חיובי) או מפסידה (שלילי) מהליכה לבחירות, לעומת שמירה על המנדטים הנוכחיים.
     התוצאה נמדדת יחסית לנקודת הייחוס, ומפלגה שיורדת מתחת לאחוז החסימה מקבלת 0 מנדטים."""
-    delta, sigma, ref = p.risk.get(i, ELECTION_RISK[i])
-    now = PARTIES[i]["seats"]
-    ref = max(ref, 1)
-    after = np.maximum(now + delta + sigma * _GRID, 0)
-    after = np.where(after < p.threshold, 0, after)
-    gamble = float((_W * prospect_value((after - ref) / ref, p.loss_aversion)).sum())
-    keep = float(prospect_value((now - ref) / ref, p.loss_aversion))
+    ref = max(ELECTION_RISK[i][2], 1)
+    after = _seats_after(i)
+    after = np.where(after < THRESHOLD, 0, after)
+    gamble = float((_W * prospect_value((after - ref) / ref, LOSS_AVERSION)).sum())
+    keep = float(prospect_value((PARTIES[i]["seats"] - ref) / ref, LOSS_AVERSION))
     return gamble - keep
 
 
-def threshold_risk(i, p: Params) -> float:
-    """ההסתברות שהמפלגה תרד מתחת לאחוז החסימה בבחירות חוזרות."""
-    delta, sigma, _ = p.risk.get(i, ELECTION_RISK[i])
-    after = np.maximum(PARTIES[i]["seats"] + delta + sigma * _GRID, 0)
-    return float(_W[after < p.threshold].sum())
+def threshold_risk(i) -> float:
+    """ההסתברות שהמפלגה תרד מתחת לאחוז החסימה בבחירות חדשות."""
+    return float(_W[_seats_after(i) < THRESHOLD].sum())
+
+
+def default_election_fear() -> dict:
+    """ברירת המחדל של החשש מבחירות: עלות הבחירות פחות ערך ההגרלה, ולליכוד פחות פרמיית ממשלת המעבר."""
+    return {i: round(ELECTION_COST - RISK_K * election_gamble(i) - (CARETAKER if i == INCUMBENT else 0.0), 2)
+            for i in NAMES}
+
+
+ELECTION_FEAR = default_election_fear()
+
+
+def election_fear(i, p: Params) -> float:
+    """כמה המפלגה חוששת מבחירות חדשות. שלילי = מעדיפה בחירות."""
+    return p.election_fear.get(i, ELECTION_FEAR[i])
 
 
 def outside_option(i, p: Params) -> float:
-    e = p.base_outside - p.election_cost + p.risk_k * election_gamble(i, p)
-    if i == INCUMBENT:
-        e += p.caretaker
-    return e
+    """ערך החוץ: מה המפלגה מקבלת אם אין ממשלה והולכים לבחירות חדשות."""
+    return BASE_OUTSIDE - election_fear(i, p)
 
 
 @dataclass

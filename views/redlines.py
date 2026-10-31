@@ -5,11 +5,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from model import NAMES, REDLINE_GROUPS, party_distance, penalty_matrix, redline_breakdown
-from ui import sidebar_params
-
-p = sidebar_params()
+from ui import chart, sidebar_params
 
 st.title("🚫 קווים אדומים")
+p = sidebar_params()
+
 st.markdown("#### 1. מטריצת הקנסות: מי מחרים את מי")
 st.caption("שורה = המפלגה שמשלמת את הקנס, עמודה = השותפה שבגללה הוא משולם. "
            "המטריצה לא סימטרית: מפלגה יכולה להחרים שותפה שלא מחרימה אותה. "
@@ -27,10 +27,10 @@ fig = go.Figure(go.Heatmap(z=Mz, x=NAMES, y=NAMES, colorscale="Reds", customdata
                            texttemplate="%{text}",
                            hovertemplate="<b>%{y}</b> משלמת על ישיבה עם <b>%{x}</b><br>"
                                          "%{customdata}<extra></extra>",
-                           colorbar=dict(title="קנס")))
+                           colorbar=dict(title="קנס", orientation="h", y=1.02, yanchor="bottom", thickness=12)))
 fig.update_layout(height=560, yaxis=dict(autorange="reversed", title="משלמת את הקנס"),
                   xaxis=dict(title="בגלל השותפה"))
-st.plotly_chart(fig, width="stretch")
+chart(fig)
 
 st.markdown("#### 2. קרובים אבל חסומים")
 st.caption("כל נקודה היא זוג מפלגות. ציר X: המרחק האידאולוגי (לפי סליידרי חשיבות הצירים). "
@@ -66,4 +66,4 @@ for x, y, t in [(0, ymax, "קרובים אבל חסומים"), (xmax, ymax, "ר�
     fig.add_annotation(x=x, y=y, text=f"<b>{t}</b>", showarrow=False,
                        xanchor="left" if x == 0 else "right", font=dict(color="gray"))
 fig.update_layout(legend=dict(title="קו אדום עיקרי"))
-st.plotly_chart(fig, width="stretch")
+chart(fig)
