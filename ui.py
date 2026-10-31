@@ -103,6 +103,9 @@ def sidebar_params() -> Params:
 
     sb.subheader("המפלגות הערביות")
     arab_external = sb.checkbox("תמיכה מבחוץ, בלי תיקים (מודל 'בנט-לפיד' / רע\"מ)", True, key=K("ext"))
+    raam_inside = sb.checkbox("רע\"מ בתוך הקואליציה (כמו ב-2021)", True, key=K("raam_in"),
+                              help="רע\"מ חברה בקואליציה ומשלמת ומקבלת כמו כל שותפה. "
+                                   "רק המשותפת נשארת תומכת מבחוץ.")
     external_discount = sb.slider("עד כמה תמיכה מבחוץ מרככת את החרם", 0.0, 1.0, 0.5, 0.05, key=K("disc"))
     arab_budget = sb.slider("ערך ההישגים התקציביים לתומכת חיצונית", 0.0, 1.0, 0.35, 0.05, key=K("budget"))
 
@@ -110,7 +113,7 @@ def sidebar_params() -> Params:
                rotation=rotation, election_cost=election_cost, base_outside=base_outside,
                risk=risk, loss_aversion=loss_aversion, threshold=threshold, risk_k=risk_k,
                hardness=hardness, arab_external=arab_external,
-               external_discount=external_discount, arab_budget=arab_budget,
+               raam_inside=raam_inside, external_discount=external_discount, arab_budget=arab_budget,
                caretaker=caretaker)
     return p
 

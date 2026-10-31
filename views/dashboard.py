@@ -6,8 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from model import (ARAB, NAMES, PARTIES, evaluate, formateur_outcome, label, outside_option,
-                   rotation_pair, seats, utility, chicken_coalitions, chicken_game,
+from model import (ARAB, NAMES, PARTIES, REDLINE_GROUPS, evaluate, formateur_outcome, group_penalties,
+                   label, outside_option, rotation_pair, seats, utility, chicken_coalitions, chicken_game,
                    correlated_equilibrium, SWERVE, STRAIGHT)
 from ui import K, sidebar_params
 
@@ -16,6 +16,22 @@ p = sidebar_params()
 min_only = st.sidebar.checkbox("רק קואליציות מינימליות (בלי מפלגה מיותרת)", True, key=K("minonly"))
 
 results = evaluate(p, min_only=min_only)
+
+
+def gap_text(r):
+    """הסבר קצר לכל חוסמת: תועלת מול ערך בחירות, והקו האדום הכבד ביותר שהיא חוצה."""
+    parts = []
+    for b in sorted(r.blockers, key=lambda m: r.surplus[m]):
+        u, e = r.utilities[b], outside_option(b, p)
+        why = f"{b}: {u:.2f} בקואליציה מול {e:.2f} בבחירות"
+        pens = group_penalties(b, r.members, p)
+        if pens:
+            key = max(pens, key=pens.get)
+            why += f", בעיקר בגלל «{REDLINE_GROUPS[key][0]}» (−{pens[key]:.2f})"
+        else:
+            why += ", בלי קו אדום: פשוט מקבלת מעט מדי"
+        parts.append(why)
+    return "; ".join(parts)
 
 
 def rot_text(c):
@@ -52,7 +68,8 @@ with tabs[0]:
         st.dataframe(pd.DataFrame([{
             "קואליציה": label(r.members, p), "מנדטים": r.seats, "רוטציה": rot_text(r.members),
             "חוסמות": ", ".join(r.blockers),
-            "הפער שצריך לסגור": round(-min(r.surplus.values()), 3)} for r in near]),
+            "הפער שצריך לסגור": round(-min(r.surplus.values()), 3),
+            "הסבר הפער": gap_text(r)} for r in near]),
             hide_index=True, width="stretch")
     else:
         st.success(f"### ✅ {f} מרכיב/ה: {label(best.members, p)}  ({best.seats} מנדטים)")

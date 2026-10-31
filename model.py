@@ -56,11 +56,17 @@ REDLINE_GROUPS = {
                   [(h, x) for h in HAREDI for x in ("ישראל ביתנו", "ישר", "ביחד")]
                   + [(x, h) for h in HAREDI for x in ("ישראל ביתנו", "ישר", "ביחד")]),
     "zionist_vs_arabs": ("מפלגות ציוניות ⟷ מפלגות ערביות",
-                         [(z, a) for z in NAMES if z not in ARAB | FAR_RIGHT
+                         [(z, a) for z in NAMES if z not in ARAB | FAR_RIGHT | {"הדמוקרטים"}
                           for a in ARAB]),
     "arabs_vs_right": ("המפלגות הערביות ⟷ ממשלת ימין",
                        [(a, r) for a in ARAB for r in ("הליכוד",) ]),
+    "far_right_no_likud": ("הימין הקיצוני לא יושב בממשלה בלי הליכוד",
+                           [(f, x) for f in FAR_RIGHT for x in CHANGE | HAREDI]),
+    "otzma_vs_center": ("ביחד / ישראל ביתנו ⟷ עוצמה יהודית",
+                        [(x, "עוצמה יהודית") for x in ("ביחד", "ישראל ביתנו")]),
 }
+# קווים שמתבטלים כשמפלגה מסוימת בקואליציה
+REDLINE_WAIVED_BY = {"far_right_no_likud": "הליכוד"}
 # משקל בסיסי לכל זוג (לפני הכפלה בפרמטר הקשיחות)
 BASE_PENALTY = 0.6
 
@@ -82,6 +88,7 @@ class Params:
     risk_k: float = 0.5                # רגישות ערך הבחירות לתוצאת ההגרלה
     hardness: dict = field(default_factory=dict)   # קשיחות כל קבוצת קווים אדומים (0-3)
     arab_external: bool = True         # מפלגות ערביות כתומכות מבחוץ (בלי תיקים)
+    raam_inside: bool = True           # רע"מ חברה בקואליציה (כמו ב-2021), רק המשותפת תומכת מבחוץ
     external_discount: float = 0.5     # כמה תמיכה מבחוץ מקטינה קווים אדומים כלפיהן
     arab_budget: float = 0.35          # הישגים תקציביים לתומכת חיצונית
     caretaker: float = 0.15            # פרמיית ממשלת מעבר: ערך הפלונטר לליכוד, שנשאר בשלטון
@@ -89,7 +96,8 @@ class Params:
 
 def default_hardness():
     return {"boycott_bibi": 1.0, "far_right_vs_arabs": 3.0, "far_right_vs_left": 1.5,
-            "draft_law": 1.0, "zionist_vs_arabs": 0.7, "arabs_vs_right": 2.0}
+            "draft_law": 0.5, "zionist_vs_arabs": 1.05, "arabs_vs_right": 2.0,
+            "far_right_no_likud": 1.5, "otzma_vs_center": 0.3}
 
 
 def penalty_matrix(p: Params) -> np.ndarray:
@@ -152,8 +160,9 @@ def power_indices():
 def _members_split(c, p: Params):
     """מחזיר (חברי ממשלה, תומכים מבחוץ)."""
     if p.arab_external:
-        gov = [x for x in c if x not in ARAB]
-        ext = [x for x in c if x in ARAB]
+        inside = {"רע\"מ"} if p.raam_inside else set()
+        gov = [x for x in c if x not in ARAB - inside]
+        ext = [x for x in c if x in ARAB - inside]
         if gov:
             return gov, ext
     return list(c), []
@@ -204,8 +213,6 @@ def rotation_pair(c, p: Params):
 
 def utility(i, c, p: Params, M=None) -> float:
     """תועלת של מפלגה i מקואליציה c (גם אם i מחוץ לה)."""
-    M = penalty_matrix(p) if M is None else M
-    idx = {name: k for k, name in enumerate(NAMES)}
     gov, ext = _members_split(c, p)
     pol = policy_utility(i, c, p)
     if i not in c:
@@ -224,21 +231,33 @@ def utility(i, c, p: Params, M=None) -> float:
     elif i == ranked[0]:
         u += p.pm_premium
     # קווים אדומים
-    for j in c:
-        if j == i:
+    return u - sum(group_penalties(i, c, p, ext).values())
+
+
+def group_penalties(i, c, p: Params, ext=None) -> dict:
+    """הקנס ש-i משלמת בקואליציה c, לפי קבוצת קו אדום. כל קו נחצה פעם אחת:
+    אם כמה שותפות חוצות אותו, נחשב רק הקנס הגבוה מביניהן."""
+    if ext is None:
+        ext = _members_split(c, p)[1]
+    hard = {**default_hardness(), **p.hardness}
+    out = {}
+    for key, (_, pairs) in REDLINE_GROUPS.items():
+        if REDLINE_WAIVED_BY.get(key) in c:
             continue
-        pen = M[idx[i], idx[j]]
-        if (j in ext or i in ext):
-            pen *= (1 - p.external_discount)
-        u -= pen
-    return u
+        for a, j in pairs:
+            if a == i and j in c and j != i:
+                pen = BASE_PENALTY * hard[key]
+                if j in ext or i in ext:
+                    pen *= (1 - p.external_discount)
+                out[key] = max(out.get(key, 0.0), pen)
+    return out
 
 
 # הגרלת הבחירות החוזרות לכל מפלגה: (Δ מנדטים צפוי, σ אי-ודאות במנדטים, נקודת ייחוס במנדטים).
 # נקודת הייחוס היא המעמד שהמפלגה רואה כ"שלה". מתחתיה היא בתחום ההפסדים.
 ELECTION_RISK = {
     "הליכוד": (3.0, 3.0, 32),           # איבד את המנדטים של וינטר, ומשווה את עצמו ל-32 של 2022
-    "ש\"ס": (2.0, 2.0, 11),             # ירד מ-11 ל-6 ורוצה לחזור למעמדו
+    "ש\"ס": (1.0, 2.0, 8),              # ירד מ-11 ל-6. רוצה להתאושש, אבל לא מצפה לחזור ל-11
     "יהדות התורה": (1.0, 1.5, 7),
     "הציונות הדתית": (0.0, 2.0, 6),
     "עוצמה יהודית": (0.0, 2.0, 7),
