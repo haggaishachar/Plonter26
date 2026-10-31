@@ -10,7 +10,9 @@ html, body, [class*="css"], .stMarkdown, .stSlider, .stTabs, section[data-testid
 [data-testid="stHeading"], h1, h2, h3, h4 {direction: rtl; text-align: right;}
 .block-container {padding-top: 2rem;}
 /* ה-RTL מוציא את תוכן הסרגל המקופל מחוץ לקופסה שלו, ופס ממנו נשאר מעל התוכן */
-section[data-testid="stSidebar"][aria-expanded="false"], section[data-testid="stSidebar"][aria-expanded="false"] * {visibility: hidden !important;}
+/* גרסאות שונות של Streamlit מסמנות סרגל מקופל באחת משתי התכונות */
+section[data-testid="stSidebar"]:is([aria-expanded="false"], [data-collapsed="true"]),
+section[data-testid="stSidebar"]:is([aria-expanded="false"], [data-collapsed="true"]) * {visibility: hidden !important;}
 /* הרוחב המוגדל רק במסך רחב: בטלפון הוא שובר את ההסתרה של הסרגל ומשאיר רצועה מעל התוכן */
 @media (min-width: 768px) {section[data-testid="stSidebar"] {min-width: 380px;}}
 @media (max-width: 640px) {
